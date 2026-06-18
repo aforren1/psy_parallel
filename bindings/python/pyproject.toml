@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "psy_parallel"
+version = "0.1.0"
+description = "Parallel-port access (data/status/control, blocking and async pulses)"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT-0" }
+
+# The C extension is declared in setup.py (Extension); this file just pins the
+# build backend so `pip install .` works.
+
+[tool.cibuildwheel]
+# The extension is abi3 (Limited API): setup.py forces a cp38-abi3 wheel tag
+# (py_limited_api="cp38"), so it installs on CPython 3.8+ regardless of which
+# interpreter builds it. We build on cp39 because cibuildwheel >=4 no longer
+# ships a cp38 build interpreter (3.8 is EOL); the resulting wheel is still
+# cp38-abi3. One build per platform serves every supported CPython.
+build = "cp39-*"
+# macOS has no parallel port and the library #errors there; CI runs Linux + Windows.
+skip = "*-musllinux_*"
+# Smoke test: the module imports and the no-hardware path works on the runner.
+test-command = "python -c \"import psy_parallel as pp; assert pp.Port and pp.Error; print('ports:', pp.list_ports())\""
+
+[tool.cibuildwheel.linux]
+# Ensure the Linux UAPI headers (<linux/ppdev.h>) are present in the manylinux
+# image; they normally are (glibc-headers pulls them in), this is belt-and-braces.
+before-all = "yum install -y kernel-headers || dnf install -y kernel-headers || true"

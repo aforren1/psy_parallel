@@ -1,0 +1,23 @@
+# build artifacts
+*.o
+*.so
+*.mex
+*.oct
+*.obj
+*.dll
+*.pyd
+
+# python
+__pycache__/
+build/
+dist/
+wheelhouse/
+*.egg-info/
+*.egg
+
+# header copied into the python binding for isolated/CI builds
+bindings/python/psy_parallel.h
+
+# editor / OS
+.vscode/
+.DS_Store

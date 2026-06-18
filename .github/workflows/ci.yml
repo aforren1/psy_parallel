@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # --------------------------------------------------------------------- #
+  # Compile the single-header library itself on Linux (gcc) and Windows    #
+  # (MSVC). The Windows job exercises the inpout + Win32-thread code path. #
+  # --------------------------------------------------------------------- #
+  c-library:
+    name: C library (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build & compile-check (Linux / gcc)
+        if: runner.os == 'Linux'
+        run: |
+          set -euxo pipefail
+          # C11, C++17, and the no-threads variant, warnings as errors.
+          cc  -O2 -Wall -Wextra -Werror -std=c11   -pthread -o ppdemo example.c
+          g++ -O2 -Wall -Wextra -Werror -std=c++17 -pthread -c example.c -o /dev/null
+          cc  -O2 -Wall -Wextra -Werror -std=c11 -DPSYP_NO_THREADS -c example.c -o /dev/null
+          ./ppdemo || true   # no parallel port on CI: expected to fail gracefully
+
+      - name: Build (Windows / MSVC)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          rem Locate Visual Studio and enter its x64 dev environment using only
+          rem Microsoft-shipped tooling (vswhere + vcvars64, both preinstalled).
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          cl /W3 /TC example.c || exit /b 1
+
+  # --------------------------------------------------------------------- #
+  # Python: build abi3 wheels (Limited API) on Linux + Windows.           #
+  # --------------------------------------------------------------------- #
+  python-wheels:
+    name: Python wheels (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Stage header into the package (isolated build needs it locally)
+        shell: bash
+        run: cp psy_parallel.h bindings/python/psy_parallel.h
+
+      - name: Build & test wheels
+        uses: pypa/cibuildwheel@v4.1.0
+        with:
+          package-dir: bindings/python
+          output-dir: wheelhouse
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  # --------------------------------------------------------------------- #
+  # Octave: build the MEX with mkoctfile and smoke-test it.               #
+  # --------------------------------------------------------------------- #
+  octave-mex:
+    name: Octave MEX
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Octave + dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y octave liboctave-dev
+
+      - name: Build MEX
+        working-directory: bindings/mex
+        run: octave-cli -q --eval "build"
+
+      - name: Smoke test (list ports; open is expected to fail on CI)
+        working-directory: bindings/mex
+        run: |
+          octave-cli -q --eval "
+            ports = psy_parallel_mex('list');
+            printf('detected %d port(s)\n', numel(ports));
+            try
+              h = psy_parallel_mex('open');
+              psy_parallel_mex('close', h);
+              disp('opened OK');
+            catch e
+              printf('open failed as expected on CI: %s\n', e.message);
+            end"
+
+  # --------------------------------------------------------------------- #
+  # MATLAB: install MATLAB, build the MEX, and smoke-test it.             #
+  # https://github.com/matlab-actions                                     #
+  # --------------------------------------------------------------------- #
+  matlab-mex:
+    name: MATLAB MEX
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up MATLAB
+        uses: matlab-actions/setup-matlab@v3
+
+      - name: Build MEX + smoke test
+        uses: matlab-actions/run-command@v3
+        with:
+          command: |
+            addpath('bindings/mex');
+            build;
+            ports = psy_parallel_mex('list');
+            fprintf('detected %d port(s)\n', numel(ports));
+            try
+              h = psy_parallel_mex('open');
+              psy_parallel_mex('close', h);
+              disp('opened OK');
+            catch e
+              fprintf('open failed as expected on CI: %s\n', e.message);
+            end

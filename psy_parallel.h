@@ -163,6 +163,35 @@ typedef struct psyp_port {
     void* async;   /* lazily-created async-pulse worker, or NULL  */
 } psyp_port;
 
+/* One detected parallel port, as returned by psyp_list_ports(). */
+typedef struct psyp_port_info {
+    char         name[64];  /* openable identifier: ppdev path (Linux) or
+                             * "LPTn" (Windows). Pass to psyp_desc.device on
+                             * Linux; on Windows it is informational. */
+    psyp_backend backend;   /* backend this entry was discovered for */
+    uint16_t     base_addr; /* I/O base if known, else 0 */
+} psyp_port_info;
+
+/* --- discovery ---------------------------------------------------------- */
+
+/* Enumerate parallel ports the system exposes, without opening any. Writes up
+ * to `max` entries into `out` (pass out=NULL/max=0 to just count) and returns
+ * the total number found, which may exceed `max`.
+ *
+ *   Linux:   scans /dev/parport0../dev/parport15 (the ppdev nodes); entries
+ *            carry the device path and PSYP_BACKEND_PPDEV. For raw DIRECT
+ *            access, find base addresses in /proc/ioports instead.
+ *   Windows: lists LPT* DOS devices via QueryDosDevice; entries carry the name
+ *            and PSYP_BACKEND_INPOUT with base_addr 0 (supply the real base
+ *            address yourself via psyp_desc.base_addr).
+ *
+ * Typical use:
+ *   int n = psyp_list_ports(NULL, 0);
+ *   psyp_port_info* v = malloc(n * sizeof *v);
+ *   psyp_list_ports(v, n);
+ */
+PSYP_API int psyp_list_ports(psyp_port_info* out, int max);
+
 /* --- lifecycle ---------------------------------------------------------- */
 
 /* Open a parallel port per `desc` (NULL = all defaults). Returns true on
@@ -514,6 +543,24 @@ bool psyp_write_control(psyp_port* p, uint8_t value) {
     return true;
 }
 
+int psyp_list_ports(psyp_port_info* out, int max) {
+    int count = 0;
+    for (int i = 0; i < 16; i++) {
+        char path[32];
+        snprintf(path, sizeof(path), "/dev/parport%d", i);
+        if (access(path, F_OK) != 0) continue;
+        if (out && count < max) {
+            psyp_port_info* e = &out[count];
+            memset(e, 0, sizeof(*e));
+            snprintf(e->name, sizeof(e->name), "%s", path);
+            e->backend = PSYP_BACKEND_PPDEV;
+            e->base_addr = 0;
+        }
+        count++;
+    }
+    return count;
+}
+
 #endif /* PSYP__LINUX */
 
 /* ======================================================================= *
@@ -653,6 +700,27 @@ bool psyp_write_control(psyp_port* p, uint8_t value) {
     psyp__clear_error(p);
     psyp__out(p, (uint16_t)(p->base_addr + 2), value);
     return true;
+}
+
+int psyp_list_ports(psyp_port_info* out, int max) {
+    int count = 0;
+    char buf[8192];
+    /* QueryDosDevice(NULL, ...) returns a double-NUL-terminated list of every
+     * DOS device name; filter the LPT* entries. (kernel32, no extra import.) */
+    DWORD n = QueryDosDeviceA(NULL, buf, (DWORD)sizeof(buf));
+    if (n == 0) return 0;
+    for (char* s = buf; *s; s += strlen(s) + 1) {
+        if (strncmp(s, "LPT", 3) != 0) continue;
+        if (out && count < max) {
+            psyp_port_info* e = &out[count];
+            memset(e, 0, sizeof(*e));
+            snprintf(e->name, sizeof(e->name), "%s", s);
+            e->backend = PSYP_BACKEND_INPOUT;
+            e->base_addr = 0; /* unknown; supply via psyp_desc.base_addr */
+        }
+        count++;
+    }
+    return count;
 }
 
 #endif /* PSYP__WINDOWS */

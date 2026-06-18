@@ -75,6 +75,14 @@ executable. The driver self-installs on first use and needs administrator
 rights to do so. Find the port's I/O base address in Device Manager → the LPT
 port → Resources, and pass it as `desc.base_addr`.
 
+> **Caveat:** InpOut is an unmaintained, legacy-signed kernel driver that grants
+> ring-0 port I/O. On hardened systems — Secure Boot with Memory Integrity
+> (HVCI) enabled, or Windows' vulnerable-driver blocklist — it may be refused
+> regardless of how it is installed; there is no maintained drop-in
+> replacement. The data lines are output-only on a standard (SPP) port, so for
+> trigger use a real PCIe/PCI parallel-port card (or onboard LPT) is required —
+> USB-to-parallel *printer* adapters do not expose a register-level I/O port.
+
 ## Register model
 
 A standard (SPP) port has three byte registers at `base+0/+1/+2`:
@@ -94,6 +102,8 @@ addresses are provided as `PSYP_LPT1` (0x378), `PSYP_LPT2` (0x278), `PSYP_LPT3`
 ## API
 
 ```c
+int         psyp_list_ports(psyp_port_info* out, int max);  /* enumerate; opens nothing */
+
 bool        psyp_open(psyp_port* p, const psyp_desc* desc);
 void        psyp_close(psyp_port* p);
 const char* psyp_error(const psyp_port* p);
@@ -152,6 +162,20 @@ rather than waiting out the remaining pulse width.
 Timing is still best-effort and bounded by OS scheduling — for the tightest
 trigger timing prefer `PSYP_BACKEND_DIRECT` on a real-time-tuned kernel and an
 isolated CPU.
+
+`psyp_list_ports` enumerates ports without opening any — on Linux it scans the
+`/dev/parport*` ppdev nodes; on Windows it lists `LPT*` devices. Pass
+`out=NULL, max=0` to just get the count.
+
+## Bindings
+
+Language bindings live under [bindings/](bindings/), each with its own README:
+
+- **[Python](bindings/python/)** — a dependency-free CPython extension built
+  against the Limited API (one `psy_parallel.abi3.so` for CPython 3.8+).
+  `pip install bindings/python`, then `import psy_parallel`.
+- **[MATLAB / Octave](bindings/mex/)** — a MEX function with ppdev-mex-style
+  command dispatch. Build with `bindings/mex/build.m`.
 
 ## License
 
