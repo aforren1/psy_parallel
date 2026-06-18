@@ -25,7 +25,12 @@
  * via mexAtExit, so a forgotten close cannot leave an async worker thread
  * pointing at a freed port.
  */
-#define _GNU_SOURCE   /* clock_gettime/nanosleep/pthread_*: define before any header */
+/* clock_gettime/nanosleep/pthread_*: ensure the feature macro is set before any
+ * header. Guarded because some mex toolchains (MATLAB) already define it on the
+ * command line, while others (Octave mkoctfile) do not. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include "mex.h"
 #include <string.h>
 #include <stdlib.h>

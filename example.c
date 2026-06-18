@@ -18,12 +18,14 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 int main(int argc, char** argv) {
     unsigned long code = (argc > 1) ? strtoul(argv[1], NULL, 0) : 0x01;
 
     psyp_port pp;
-    psyp_desc desc = {0};
+    psyp_desc desc;
+    memset(&desc, 0, sizeof(desc));  /* zero-init (portable C and C++) */
     /* All defaults: ppdev "/dev/parport0" on Linux, inpout @ LPT1 on Windows.
      * To use raw x86 port I/O instead (root):
      *     desc.backend   = PSYP_BACKEND_DIRECT;

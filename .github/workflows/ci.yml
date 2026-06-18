@@ -73,15 +73,20 @@ jobs:
   # Octave: build the MEX with mkoctfile and smoke-test it.               #
   # --------------------------------------------------------------------- #
   octave-mex:
-    name: Octave MEX
+    name: Octave 7.3 MEX
     runs-on: ubuntu-latest
+    # Pin Octave 7.3.0 via Debian bookworm (the target version). This is also
+    # deterministic and avoids the liboctave-dev -> octave-dev package rename
+    # that newer distros made (octave-dev is correct on bookworm and noble).
+    container: debian:bookworm
     steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Octave + dev headers
+      - name: Install Octave 7.3 + build tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y octave liboctave-dev
+          apt-get update
+          apt-get install -y --no-install-recommends git build-essential octave octave-dev
+          octave-cli --version | head -1
+
+      - uses: actions/checkout@v7
 
       - name: Build MEX
         working-directory: bindings/mex
