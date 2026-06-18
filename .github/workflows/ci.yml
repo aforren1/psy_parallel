@@ -83,7 +83,11 @@ jobs:
       - name: Install Octave 7.3 + build tools
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git build-essential octave octave-dev
+          # ca-certificates is required for actions/checkout's HTTPS git fetch
+          # (the bare bookworm image has none, and --no-install-recommends would
+          # not pull it in transitively).
+          apt-get install -y --no-install-recommends \
+            ca-certificates git build-essential octave octave-dev
           octave-cli --version | head -1
 
       - uses: actions/checkout@v7
