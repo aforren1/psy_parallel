@@ -204,7 +204,9 @@ PSYP_API bool psyp_pulse(psyp_port* p, uint8_t value, uint32_t usec);
  * then returns at once; a dedicated real-time worker thread writes the
  * trailing 0 after `usec` microseconds.
  *
- * The worker is created on first use and runs at elevated scheduling priority
+ * The worker is created on first use; on that first call the onset is written
+ * before the worker is created, so even the first trigger's onset is not
+ * delayed by thread spin-up. The worker runs at elevated scheduling priority
  * for low timing jitter: SCHED_DEADLINE (falling back to SCHED_FIFO, then
  * normal) on Linux, THREAD_PRIORITY_TIME_CRITICAL with a high-resolution
  * waitable timer on Windows. Acquiring a real-time policy needs privileges
@@ -420,6 +422,21 @@ bool psyp_write_data(psyp_port* p, uint8_t value) {
     return true;
 }
 
+#ifndef PSYP_NO_THREADS
+/* Hardware data write that does NOT touch the shared p->error buffer, so the
+ * async worker thread can drop the trailing edge without racing main-thread
+ * API calls (which also read/write p->error). */
+static bool psyp__write_data_raw(psyp_port* p, uint8_t value) {
+    if (p->direct) {
+#if defined(PSYP__HAVE_IOPORT)
+        outb(value, p->base_addr);
+        return true;
+#endif
+    }
+    return ioctl(p->fd, PPWDATA, &value) == 0;
+}
+#endif
+
 uint8_t psyp_read_data(psyp_port* p) {
     if (!psyp_is_open(p)) { psyp__set_error(p, "port not open"); return 0; }
     psyp__clear_error(p);
@@ -595,6 +612,15 @@ bool psyp_write_data(psyp_port* p, uint8_t value) {
     return true;
 }
 
+#ifndef PSYP_NO_THREADS
+/* Hardware data write that does NOT touch the shared p->error buffer (see the
+ * Linux note); used by the async worker for the trailing edge. */
+static bool psyp__write_data_raw(psyp_port* p, uint8_t value) {
+    psyp__out(p, p->base_addr, value);
+    return true;
+}
+#endif
+
 uint8_t psyp_read_data(psyp_port* p) {
     if (!psyp_is_open(p)) { psyp__set_error(p, "port not open"); return 0; }
     psyp__clear_error(p);
@@ -738,7 +764,7 @@ static void* psyp__worker_main(void* arg) {
         clock_gettime(CLOCK_MONOTONIC, &now);
         if (!psyp__ts_before(&now, &w->off_at)) {
             /* Deadline reached: drop the trailing edge. */
-            psyp_write_data(w->port, 0);
+            psyp__write_data_raw(w->port, 0);
             w->has_job = 0;
             continue;
         }
@@ -751,7 +777,7 @@ static void* psyp__worker_main(void* arg) {
     /* On quit, flush any pending trailing edge right away so the data lines
      * are never left asserted -- without waiting out the remaining width. */
     if (w->has_job) {
-        psyp_write_data(w->port, 0);
+        psyp__write_data_raw(w->port, 0);
         w->has_job = 0;
     }
     pthread_mutex_unlock(&w->mtx);
@@ -849,7 +875,7 @@ static DWORD WINAPI psyp__worker_main(LPVOID arg) {
         QueryPerformanceCounter(&now);
         LONGLONG rem = w->off_at.QuadPart - now.QuadPart;
         if (rem <= 0) {
-            psyp_write_data(w->port, 0);
+            psyp__write_data_raw(w->port, 0);
             w->has_job = 0;
             continue;
         }
@@ -875,7 +901,7 @@ static DWORD WINAPI psyp__worker_main(LPVOID arg) {
     /* On quit, flush any pending trailing edge right away (don't wait out the
      * remaining width) so the data lines are never left asserted. */
     if (w->has_job) {
-        psyp_write_data(w->port, 0);
+        psyp__write_data_raw(w->port, 0);
         w->has_job = 0;
     }
     LeaveCriticalSection(&w->cs);
@@ -948,10 +974,23 @@ static bool psyp__async_submit(psyp_port* p, uint8_t value, uint32_t usec) {
 
 bool psyp_pulse_async(psyp_port* p, uint8_t value, uint32_t usec) {
     if (!psyp_is_open(p)) { psyp__set_error(p, "port not open"); return false; }
-    if (!psyp__async_start(p)) return false;
-    /* The leading edge is written here, on the caller's thread (inside submit,
-     * under the worker lock), so trigger onset is not delayed by the worker
-     * waking up and the write cannot race the worker's trailing edge. */
+    if (!p->async) {
+        /* First use: write the onset NOW, before paying the worker-thread
+         * creation cost, so the very first trigger's onset is not delayed by
+         * thread spin-up. No worker exists yet, so nothing can race this write
+         * or stomp it with a trailing edge. */
+        if (!psyp_write_data(p, value)) return false;
+        if (!psyp__async_start(p)) {
+            /* Don't leave the data lines asserted with no worker to clear
+             * them; use the raw write so psyp__async_start's error survives. */
+            psyp__write_data_raw(p, 0);
+            return false;
+        }
+    }
+    /* Steady state: the leading edge is (re)written inside submit on the
+     * caller's thread under the worker lock, so onset is not delayed by the
+     * worker waking up and the write cannot race the worker's trailing edge.
+     * On the first-use path above this re-asserts the same value (no edge). */
     return psyp__async_submit(p, value, usec);
 }
 

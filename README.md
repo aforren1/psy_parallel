@@ -121,7 +121,9 @@ writes 0 — simple but **blocking**.
 `psyp_pulse_async(p, value, usec)` returns immediately. It writes the leading
 edge (`value`) on the calling thread — so the trigger **onset** is not delayed
 by thread scheduling — then a dedicated real-time worker thread writes the
-trailing 0 after `usec`. The worker runs at elevated priority for low jitter:
+trailing 0 after `usec`. On the very first call the onset is written *before*
+the worker thread is created, so even the first trigger's onset is not delayed
+by thread spin-up. The worker runs at elevated priority for low jitter:
 
 - **Linux**: `SCHED_DEADLINE` via the raw `sched_setattr` syscall (1 ms budget
   / 10 ms period), falling back to `SCHED_FIFO`, then a normal thread. The
@@ -142,9 +144,10 @@ Issuing a new async pulse while one is pending makes the most recently
 requested off-time govern the single trailing edge — the worker re-evaluates
 immediately whether that deadline is earlier or later than the old one.
 
-The worker is created on first use and cleanly stopped/joined by `psyp_close`,
-which flushes any pending trailing edge **immediately** (so the data lines are
-never left asserted) rather than waiting out the remaining pulse width.
+The worker is created on first use (after that first onset has already been
+written) and cleanly stopped/joined by `psyp_close`, which flushes any pending
+trailing edge **immediately** (so the data lines are never left asserted)
+rather than waiting out the remaining pulse width.
 
 Timing is still best-effort and bounded by OS scheduling — for the tightest
 trigger timing prefer `PSYP_BACKEND_DIRECT` on a real-time-tuned kernel and an
