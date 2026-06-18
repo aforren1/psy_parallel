@@ -110,6 +110,11 @@ jobs:
               printf('open failed as expected on CI: %s\n', e.message);
             end"
 
+      - uses: actions/upload-artifact@v7
+        with:
+          name: octave-mex-bookworm
+          path: bindings/mex/psy_parallel_mex.mex*
+
   # --------------------------------------------------------------------- #
   # MATLAB: install MATLAB, build the MEX, and smoke-test it.             #
   # https://github.com/matlab-actions                                     #
@@ -138,3 +143,8 @@ jobs:
             catch e
               fprintf('open failed as expected on CI: %s\n', e.message);
             end
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: matlab-mex-linux
+          path: bindings/mex/psy_parallel_mex.mex*

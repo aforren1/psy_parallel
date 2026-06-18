@@ -18,6 +18,10 @@ function build()
         args{end+1} = '-lpthread';
     end
 
+    % mex writes its output to the current directory; build next to the source
+    % so the result is in bindings/mex regardless of the caller's cwd.
+    old = cd(here);
+    cleanup = onCleanup(@() cd(old));   %#ok<NASGU>
     mex(args{:});
-    fprintf('built psy_parallel_mex (%s)\n', mexext);
+    fprintf('built psy_parallel_mex (%s) in %s\n', mexext, here);
 end
