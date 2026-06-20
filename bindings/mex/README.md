@@ -42,6 +42,22 @@ psy_parallel_mex('control',    h, 4);              % write control register
 psy_parallel_mex('close',      h);
 ```
 
+Tune the async-pulse worker's real-time reservation (Linux
+[SCHED_DEADLINE](https://www.kernel.org/doc/html/latest/scheduler/sched-deadline.html))
+by passing a trailing **struct** (fields in nanoseconds) to `open`:
+
+```matlab
+rt = struct('runtime_ns', 5e5, 'deadline_ns', 2e6, 'period_ns', 2e6);
+h  = psy_parallel_mex('open', rt);                  % default device + RT params
+h  = psy_parallel_mex('open', '/dev/parport0', rt); % with an explicit device
+cur = psy_parallel_mex('sched', h);                 % struct of effective params
+```
+
+Any subset of fields is accepted (missing ones are 0; a 0 `period_ns` means
+"same as `deadline_ns`"). Leave the struct off for the library defaults.
+Invalid combinations (must be `0 < runtime <= deadline <= period`) raise an
+error at `open`.
+
 See [example.m](example.m).
 
 ### Commands
@@ -49,7 +65,7 @@ See [example.m](example.m).
 | Command | Returns | Notes |
 |---|---|---|
 | `'list'` | struct array | `name`, `backend`, `base_addr`; opens nothing |
-| `'open' [, dev|'direct'|'inpout' [, base]]` | `uint64` handle | defaults per platform |
+| `'open' [, dev|'direct'|'inpout' [, base]] [, rtStruct]` | `uint64` handle | defaults per platform; optional trailing RT struct (ns) |
 | `'write', h, value` | — | data register, 0..255 |
 | `'read', h` | `uint8` | data register |
 | `'setdir', h, isInput` | — | bidirectional-port direction |
@@ -57,6 +73,7 @@ See [example.m](example.m).
 | `'pulseasync', h, value, usec` | — | non-blocking (RT worker) |
 | `'status', h` | `uint8` | status register (read-only) |
 | `'control', h [, value]` | `uint8` / — | read or write control register |
+| `'sched', h` | struct | effective RT params `runtime_ns`/`deadline_ns`/`period_ns` |
 | `'close', h` | — | release the port |
 
 Errors are raised via `error()` with id `psy_parallel:*`. Every open port is

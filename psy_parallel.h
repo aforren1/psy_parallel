@@ -48,7 +48,9 @@
  *                            latency, but requires root (CAP_SYS_RAWIO) and
  *                            x86/x86_64. You must know the I/O base address.
  *
- *   Windows:
+ *   Windows (UNTESTED - compiled in CI but not run on real hardware; see
+ *   parallel64 https://github.com/tekktrik/parallel64 for a maintained,
+ *   Windows-focused alternative):
  *     PSYP_BACKEND_INPOUT  - loads inpout32.dll / inpoutx64.dll at runtime
  *                            (https://www.highrez.co.uk/downloads/inpout32/)
  *                            and calls its Out32/Inp32 entry points. Modern
@@ -135,6 +137,32 @@ typedef enum psyp_backend {
     PSYP_BACKEND_INPOUT       /* Windows inpout32/inpoutx64 DLL      */
 } psyp_backend;
 
+/* Real-time scheduling reservation for the async-pulse worker thread on Linux
+ * (SCHED_DEADLINE). Times are in nanoseconds and must satisfy
+ * runtime_ns <= deadline_ns <= period_ns. These do NOT set the pulse width
+ * (that is clock-driven); they govern how quickly and predictably the worker
+ * gets the CPU when it wakes to write the trailing edge -- i.e. edge jitter.
+ *
+ *   runtime_ns  - CPU budget guaranteed (and capped) per period.
+ *   deadline_ns - relative deadline; smaller = higher EDF priority = lower
+ *                 wake latency, but harder to admit alongside other RT tasks.
+ *   period_ns   - replenishment interval; reserved bandwidth = runtime/period.
+ *
+ * Leave all three zero for the library defaults below. If you set any field,
+ * require 0 < runtime_ns <= deadline_ns <= period_ns (a zero period_ns is
+ * taken as "same as deadline_ns"); psyp_open() rejects any other combination
+ * with an error. A valid reservation that the kernel cannot admit (or any
+ * setup on Windows) transparently falls back to SCHED_FIFO / normal. */
+typedef struct psyp_sched_deadline {
+    uint64_t runtime_ns;
+    uint64_t deadline_ns;
+    uint64_t period_ns;
+} psyp_sched_deadline;
+
+#define PSYP_DEFAULT_RT_RUNTIME_NS   1000000ull  /*  1 ms */
+#define PSYP_DEFAULT_RT_DEADLINE_NS 10000000ull  /* 10 ms */
+#define PSYP_DEFAULT_RT_PERIOD_NS   10000000ull  /* 10 ms */
+
 /* Open description. Zero-initialize it and only set what you need; missing
  * fields fall back to sensible defaults inside psyp_open(). */
 typedef struct psyp_desc {
@@ -142,6 +170,7 @@ typedef struct psyp_desc {
     const char*  device;    /* ppdev path, default "/dev/parport0"    */
     uint16_t     base_addr; /* direct/inpout base, default PSYP_LPT1   */
     bool         exclusive; /* ppdev: claim the port exclusively (PPEXCL) */
+    psyp_sched_deadline sched; /* async-worker RT params; all-zero = defaults */
 } psyp_desc;
 
 /* Port handle. Allocate it (stack/heap), pass to psyp_open(), and treat the
@@ -161,6 +190,7 @@ typedef struct psyp_port {
     bool direct;   /* using ioperm()+outb/inb                     */
 #endif
     void* async;   /* lazily-created async-pulse worker, or NULL  */
+    psyp_sched_deadline sched; /* effective async-worker RT params (Linux)    */
 } psyp_port;
 
 /* One detected parallel port, as returned by psyp_list_ports(). */
@@ -368,6 +398,30 @@ bool psyp_open(psyp_port* p, const psyp_desc* desc) {
         return false;
     }
     p->base_addr = d.base_addr ? d.base_addr : PSYP_LPT1;
+
+    /* Resolve the async-worker RT reservation. All-zero means use defaults.
+     * Otherwise normalize a zero period to the deadline (as the kernel does)
+     * and require 0 < runtime <= deadline <= period, so a partially filled
+     * struct fails loudly here instead of silently degrading to SCHED_FIFO
+     * (the kernel rejects e.g. deadline_ns == 0 with EINVAL). A *valid*
+     * reservation the kernel merely can't admit still falls back to FIFO. */
+    p->sched = d.sched;
+    if (p->sched.runtime_ns == 0 && p->sched.deadline_ns == 0 &&
+        p->sched.period_ns == 0) {
+        p->sched.runtime_ns  = PSYP_DEFAULT_RT_RUNTIME_NS;
+        p->sched.deadline_ns = PSYP_DEFAULT_RT_DEADLINE_NS;
+        p->sched.period_ns   = PSYP_DEFAULT_RT_PERIOD_NS;
+    } else {
+        if (p->sched.period_ns == 0) p->sched.period_ns = p->sched.deadline_ns;
+        if (p->sched.runtime_ns == 0 || p->sched.deadline_ns == 0 ||
+            p->sched.runtime_ns > p->sched.deadline_ns ||
+            p->sched.deadline_ns > p->sched.period_ns) {
+            psyp__set_error(p, "invalid desc.sched: require 0 < runtime_ns <= "
+                               "deadline_ns <= period_ns (period_ns 0 means "
+                               "same as deadline_ns)");
+            return false;
+        }
+    }
 
     if (p->backend == PSYP_BACKEND_PPDEV) {
         const char* path = d.device ? d.device : "/dev/parport0";
@@ -776,18 +830,18 @@ static int psyp__setattr(struct psyp__sched_attr* a) {
 }
 
 /* Raise the calling (worker) thread to a real-time policy. SCHED_DEADLINE
- * first: a sporadic task with a 1 ms budget inside a 10 ms period and a
- * matching 10 ms deadline -- generous enough for short trigger pulses while
- * staying admissible by the kernel's EDF acceptance test. Falls back to
- * SCHED_FIFO, then leaves the thread at its default policy. */
-static void psyp__worker_realtime(void) {
+ * first, using the reservation from psyp_desc.sched (defaults: 1 ms budget in
+ * a 10 ms period/deadline) -- enough for short trigger pulses while staying
+ * admissible by the kernel's EDF acceptance test. Falls back to SCHED_FIFO,
+ * then leaves the thread at its default policy. */
+static void psyp__worker_realtime(const psyp_sched_deadline* rt) {
     struct psyp__sched_attr a;
     memset(&a, 0, sizeof(a));
     a.size           = (uint32_t)sizeof(a);
     a.sched_policy   = SCHED_DEADLINE;
-    a.sched_runtime  =  1000000ull; /*  1 ms */
-    a.sched_deadline = 10000000ull; /* 10 ms */
-    a.sched_period   = 10000000ull; /* 10 ms */
+    a.sched_runtime  = rt->runtime_ns;
+    a.sched_deadline = rt->deadline_ns;
+    a.sched_period   = rt->period_ns;
     if (psyp__setattr(&a) == 0) return;
 
     struct sched_param sp;
@@ -816,7 +870,7 @@ static int psyp__ts_before(const struct timespec* a, const struct timespec* b) {
 
 static void* psyp__worker_main(void* arg) {
     psyp__async* w = (psyp__async*)arg;
-    psyp__worker_realtime();
+    psyp__worker_realtime(&w->port->sched);
 
     /* The mutex is held across the whole loop except while blocked in
      * pthread_cond_*wait (which atomically releases it). Holding it around

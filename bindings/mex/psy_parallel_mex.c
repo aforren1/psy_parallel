@@ -8,6 +8,8 @@
  *     h = psy_parallel_mex('open', '/dev/parport1')% ppdev device (Linux)
  *     h = psy_parallel_mex('open', 'direct', 888)  % raw x86 I/O @ base (root)
  *     h = psy_parallel_mex('open', 'inpout', 888)  % Windows inpout @ base
+ *     % optional trailing struct tunes the async-worker RT reservation (ns):
+ *     h = psy_parallel_mex('open', struct('runtime_ns',5e5,'deadline_ns',2e6))
  *
  *     psy_parallel_mex('write',      h, value)     % data register (0..255)
  *     d = psy_parallel_mex('read',   h)            % read data register
@@ -17,6 +19,7 @@
  *     s = psy_parallel_mex('status', h)            % status register
  *     c = psy_parallel_mex('control',h)            % read control register
  *     psy_parallel_mex('control',    h, value)     % write control register
+ *     rt = psy_parallel_mex('sched', h)            % effective RT params struct
  *     psy_parallel_mex('close',      h)
  *
  * Build with build.m (MATLAB or Octave). See README.md.
@@ -120,15 +123,35 @@ static void check(psyp_port* port, int ok) {
     if (!ok) mexErrMsgIdAndTxt("psy_parallel:io", "%s", psyp_error(port));
 }
 
+/* Read an async-worker RT reservation from a struct with fields runtime_ns /
+ * deadline_ns / period_ns (any subset; missing fields stay 0, which psyp_open
+ * resolves -- a 0 period means "same as deadline"). */
+static void pp_read_sched(const mxArray* s, psyp_desc* d) {
+    const mxArray* f;
+    if ((f = mxGetField(s, 0, "runtime_ns")))  d->sched.runtime_ns  = (uint64_t)mxGetScalar(f);
+    if ((f = mxGetField(s, 0, "deadline_ns"))) d->sched.deadline_ns = (uint64_t)mxGetScalar(f);
+    if ((f = mxGetField(s, 0, "period_ns")))   d->sched.period_ns   = (uint64_t)mxGetScalar(f);
+}
+
 /* ---- 'open' ------------------------------------------------------------ */
 static void cmd_open(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
     psyp_desc desc;
     memset(&desc, 0, sizeof(desc));
     char* devbuf = NULL;
 
+    /* Optional trailing async-worker RT reservation as a struct with fields
+     * runtime_ns/deadline_ns/period_ns (matches the 'sched' query and the
+     * 'list' return shape). A struct is unambiguous against the device string
+     * and the scalar base address. psyp_open validates the values. */
+    if (nrhs >= 2 && mxIsStruct(prhs[nrhs - 1])) {
+        pp_read_sched(prhs[nrhs - 1], &desc);
+        nrhs--; /* consume it before parsing device/mode/base */
+    }
+
     if (nrhs >= 2) {
         if (!mxIsChar(prhs[1]))
-            mexErrMsgIdAndTxt("psy_parallel:arg", "open: 2nd arg must be a string");
+            mexErrMsgIdAndTxt("psy_parallel:arg",
+                "open: expected a device path, 'direct'/'inpout', or an RT-params struct");
         char* s = mxArrayToString(prhs[1]);
         if (strcmp(s, "direct") == 0) {
             desc.backend = PSYP_BACKEND_DIRECT;
@@ -213,6 +236,15 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
         uint8_t v = psyp_read_status(port);
         check(port, psyp_error(port)[0] == '\0');
         plhs[0] = pp_scalar_u8(v);
+
+    } else if (strcmp(cmd, "sched") == 0) {
+        /* effective async-worker RT params as a struct (ns) */
+        const char* fields[] = { "runtime_ns", "deadline_ns", "period_ns" };
+        mxArray* s = mxCreateStructMatrix(1, 1, 3, fields);
+        mxSetField(s, 0, "runtime_ns",  mxCreateDoubleScalar((double)port->sched.runtime_ns));
+        mxSetField(s, 0, "deadline_ns", mxCreateDoubleScalar((double)port->sched.deadline_ns));
+        mxSetField(s, 0, "period_ns",   mxCreateDoubleScalar((double)port->sched.period_ns));
+        plhs[0] = s;
 
     } else if (strcmp(cmd, "control") == 0) {
         if (nrhs >= 3) {                       /* write control */

@@ -43,6 +43,18 @@ pp.Port(backend=pp.BACKEND_DIRECT, base_addr=pp.LPT1)   # Linux raw I/O (root)
 pp.Port(backend=pp.BACKEND_INPOUT, base_addr=0x378)     # Windows inpout
 ```
 
+Tune the async-pulse worker's real-time reservation (Linux
+[SCHED_DEADLINE](https://www.kernel.org/doc/html/latest/scheduler/sched-deadline.html); ns):
+
+```python
+port = pp.Port(rt_runtime_ns=500_000, rt_deadline_ns=2_000_000, rt_period_ns=2_000_000)
+print(port.sched)   # {'runtime_ns': 500000, 'deadline_ns': 2000000, 'period_ns': 2000000}
+```
+
+Omit `rt_period_ns` (or leave it 0) and it defaults to the deadline. Leave all
+three unset for the library defaults. Invalid combinations (must be
+`0 < runtime ≤ deadline ≤ period`) raise `pp.Error` at construction.
+
 See [example.py](example.py).
 
 ## API
@@ -50,17 +62,18 @@ See [example.py](example.py).
 | | |
 |---|---|
 | `pp.list_ports() -> list[dict]` | enumerate ports (`name`, `backend`, `base_addr`) |
-| `pp.Port(device=None, backend=BACKEND_DEFAULT, base_addr=0, exclusive=False)` | open a port |
+| `pp.Port(device=None, backend=BACKEND_DEFAULT, base_addr=0, exclusive=False, rt_runtime_ns=0, rt_deadline_ns=0, rt_period_ns=0)` | open a port |
 | `port.write_data(value)` / `port.read_data()` | data register |
 | `port.set_data_dir(input)` | data-line direction (bidirectional ports) |
 | `port.pulse(value, usec)` | blocking pulse (releases the GIL while waiting) |
 | `port.pulse_async(value, usec)` | non-blocking pulse via the RT worker thread |
 | `port.read_status()` / `port.get_status_bit(mask)` | status register |
 | `port.read_control()` / `port.write_control(value)` / `port.set_control_bit(mask, on)` | control register |
-| `port.close()`, `port.is_open`, `port.base_addr`, `port.backend` | lifecycle / info |
+| `port.close()`, `port.is_open`, `port.base_addr`, `port.backend`, `port.sched` | lifecycle / info |
 
 Errors raise `pp.Error`. Constants: `BACKEND_*`, `LPT1/2/3`, `STATUS_*`,
-`CONTROL_*`. `Port` is a context manager (`with pp.Port() as port:`).
+`CONTROL_*`, `DEFAULT_RT_{RUNTIME,DEADLINE,PERIOD}_NS`. `Port` is a context
+manager (`with pp.Port() as port:`).
 
 Platform setup (ppdev permissions, the Windows inpout DLL, etc.) is described
 in the [top-level README](../../README.md).

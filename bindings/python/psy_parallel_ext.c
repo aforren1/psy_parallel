@@ -43,14 +43,17 @@ static PyObject* pp_raise(psyp_port* port) {
 }
 
 static int Port_init(PyObject* self, PyObject* args, PyObject* kwds) {
-    static char* kw[] = { "device", "backend", "base_addr", "exclusive", NULL };
+    static char* kw[] = { "device", "backend", "base_addr", "exclusive",
+                          "rt_runtime_ns", "rt_deadline_ns", "rt_period_ns", NULL };
     const char* device = NULL;
     int backend = PSYP_BACKEND_DEFAULT;
     unsigned int base_addr = 0;
     int exclusive = 0;
+    unsigned long long rt_runtime = 0, rt_deadline = 0, rt_period = 0;
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|ziIp", kw,
-                                     &device, &backend, &base_addr, &exclusive))
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|ziIpKKK", kw,
+                                     &device, &backend, &base_addr, &exclusive,
+                                     &rt_runtime, &rt_deadline, &rt_period))
         return -1;
     if (base_addr > 0xFFFFu) {
         PyErr_SetString(PyExc_ValueError, "base_addr must fit in 16 bits");
@@ -63,6 +66,11 @@ static int Port_init(PyObject* self, PyObject* args, PyObject* kwds) {
     desc.device = device;
     desc.base_addr = (uint16_t)base_addr;
     desc.exclusive = exclusive ? true : false;
+    /* Async-worker SCHED_DEADLINE reservation (Linux); all-zero -> defaults.
+     * psyp_open validates 0 < runtime <= deadline <= period and raises here. */
+    desc.sched.runtime_ns = rt_runtime;
+    desc.sched.deadline_ns = rt_deadline;
+    desc.sched.period_ns = rt_period;
 
     if (!psyp_open(AS_PORT(self), &desc)) {
         PyErr_SetString(PpError, psyp_error(AS_PORT(self)));
@@ -197,10 +205,21 @@ static PyObject* Port_get_backend(PyObject* self, void* Py_UNUSED(closure)) {
     return PyLong_FromLong((long)AS_PORT(self)->backend);
 }
 
+static PyObject* Port_get_sched(PyObject* self, void* Py_UNUSED(closure)) {
+    psyp_port* p = AS_PORT(self);
+    return Py_BuildValue("{s:K,s:K,s:K}",
+                         "runtime_ns",  (unsigned long long)p->sched.runtime_ns,
+                         "deadline_ns", (unsigned long long)p->sched.deadline_ns,
+                         "period_ns",   (unsigned long long)p->sched.period_ns);
+}
+
 static PyGetSetDef Port_getset[] = {
     { "is_open",   Port_get_is_open,   NULL, "True while the port is open.", NULL },
     { "base_addr", Port_get_base_addr, NULL, "Resolved I/O base address.",   NULL },
     { "backend",   Port_get_backend,   NULL, "Active backend (BACKEND_*).",  NULL },
+    { "sched",     Port_get_sched,     NULL,
+      "Effective async-worker RT params (Linux SCHED_DEADLINE) as a dict "
+      "{runtime_ns, deadline_ns, period_ns}.", NULL },
     { NULL }
 };
 
@@ -325,6 +344,10 @@ PyMODINIT_FUNC PyInit_psy_parallel(void) {
     PyModule_AddIntConstant(m, "LPT1", PSYP_LPT1);
     PyModule_AddIntConstant(m, "LPT2", PSYP_LPT2);
     PyModule_AddIntConstant(m, "LPT3", PSYP_LPT3);
+    /* default async-worker SCHED_DEADLINE params (nanoseconds) */
+    PyModule_AddIntConstant(m, "DEFAULT_RT_RUNTIME_NS",  (long)PSYP_DEFAULT_RT_RUNTIME_NS);
+    PyModule_AddIntConstant(m, "DEFAULT_RT_DEADLINE_NS", (long)PSYP_DEFAULT_RT_DEADLINE_NS);
+    PyModule_AddIntConstant(m, "DEFAULT_RT_PERIOD_NS",   (long)PSYP_DEFAULT_RT_PERIOD_NS);
     /* status bits */
     PyModule_AddIntConstant(m, "STATUS_BUSY",   PSYP_STATUS_BUSY);
     PyModule_AddIntConstant(m, "STATUS_ACK",    PSYP_STATUS_ACK);

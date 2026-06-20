@@ -50,7 +50,7 @@ extra link). Build with `-DPSYP_NO_THREADS` to drop threading and the
 |------------------------|----------|-------|
 | `PSYP_BACKEND_PPDEV`   | Linux    | Kernel `ppdev` char device (`/dev/parport0`). Portable, recommended. |
 | `PSYP_BACKEND_DIRECT`  | Linux    | Raw x86 `ioperm`+`outb`/`inb`. Lowest latency, needs root, x86 only. |
-| `PSYP_BACKEND_INPOUT`  | Windows  | Loads `inpout32.dll`/`inpoutx64.dll` at runtime and calls `Out32`/`Inp32`. |
+| `PSYP_BACKEND_INPOUT`  | Windows  | **Untested** (see below). Loads `inpout32.dll`/`inpoutx64.dll` at runtime and calls `Out32`/`Inp32`. |
 | `PSYP_BACKEND_DEFAULT` | both     | `ppdev` on Linux, `inpout` on Windows. |
 
 ### Linux permissions (ppdev)
@@ -67,6 +67,10 @@ sudo usermod -aG lp $USER && newgrp lp # one-time: grant device access
 `setcap cap_sys_rawio+ep`) and the I/O base address (`/proc/ioports`).
 
 ### Windows (inpout)
+
+> **Untested.** The Windows backend is written and compiled in CI, but is
+> not exercised on real hardware by the maintainer — treat it as experimental
+> and report back if you try it.
 
 User-mode port I/O is blocked on modern Windows, so a kernel helper driver is
 required. Install [InpOut](https://www.highrez.co.uk/downloads/inpout32/) and
@@ -135,8 +139,10 @@ trailing 0 after `usec`. On the very first call the onset is written *before*
 the worker thread is created, so even the first trigger's onset is not delayed
 by thread spin-up. The worker runs at elevated priority for low jitter:
 
-- **Linux**: `SCHED_DEADLINE` via the raw `sched_setattr` syscall (1 ms budget
-  / 10 ms period), falling back to `SCHED_FIFO`, then a normal thread. The
+- **Linux**: [`SCHED_DEADLINE`](https://www.kernel.org/doc/html/latest/scheduler/sched-deadline.html)
+  via the raw `sched_setattr` syscall (default 1 ms budget / 10 ms
+  period/deadline — tunable per port via the `psyp_desc.sched` substruct),
+  falling back to `SCHED_FIFO`, then a normal thread. The
   trailing edge is timed against an absolute `CLOCK_MONOTONIC` deadline with
   `pthread_cond_timedwait`, so it doesn't accumulate wake-latency drift and can
   be re-evaluated instantly. A real-time policy needs `CAP_SYS_NICE` (run
